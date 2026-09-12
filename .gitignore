@@ -1,3 +1,4 @@
 /config.yaml
 /asset-api
 .env
+.secrets-local/
