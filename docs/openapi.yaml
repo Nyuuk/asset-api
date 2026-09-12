@@ -1,0 +1,341 @@
+openapi: 3.0.3
+info:
+  title: asset-api
+  description: >
+    Multitenant asset-upload API backed by SeaweedFS. Every uploaded asset gets
+    a random, unguessable key and a TTL; a background worker deletes it once
+    expired. Admin endpoints manage tenants/API keys and are intentionally
+    NOT exposed publicly — reach them via `kubectl port-forward svc/asset-api
+    -n default 18080:8080` and use the `http://localhost:18080` server entry
+    below. Ops endpoints are public under the production server.
+  version: "1.0.0"
+servers:
+  - url: https://assets.kangoprek.my.id
+    description: Production (only /api/ops/* is actually reachable here)
+  - url: http://localhost:18080
+    description: kubectl port-forward svc/asset-api -n default 18080:8080 (for /api/admin/*)
+
+tags:
+  - name: admin
+    description: Tenant/API-key management. Internal use only, not publicly routed.
+  - name: ops
+    description: Asset upload/status/delete. Used by AI agents via curl.
+  - name: health
+    description: Liveness/readiness.
+
+security: []
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: OK
+
+  /api/admin/tenants:
+    post:
+      tags: [admin]
+      summary: Create a tenant and issue its API key
+      description: The returned `api_key` is shown once and is not retrievable again — regenerate it if lost.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+            example:
+              name: my-tenant
+      responses:
+        "201":
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTenantResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "409":
+          description: Tenant name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      tags: [admin]
+      summary: List all tenants
+      security:
+        - adminAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantListResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /api/admin/tenants/{id}:
+    delete:
+      tags: [admin]
+      summary: Revoke a tenant (soft delete)
+      description: Immediately invalidates the tenant's API key for all `/api/ops/*` calls.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /api/admin/tenants/{id}/regenerate:
+    post:
+      tags: [admin]
+      summary: Issue a new API key for an existing tenant
+      description: Invalidates the tenant's previous API key.
+      security:
+        - adminAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /api/ops/upload:
+    post:
+      tags: [ops]
+      summary: Upload a file, get back a public TTL-limited URL
+      security:
+        - tenantAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The file to upload.
+                ttl_seconds:
+                  type: integer
+                  description: >
+                    Optional. Overrides the server's default TTL for this
+                    asset, clamped to the server's configured max TTL.
+                  example: 3600
+      responses:
+        "201":
+          description: Uploaded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "413":
+          description: File exceeds the server's configured max file size
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/Error"
+
+  /api/ops/assets/{key}:
+    get:
+      tags: [ops]
+      summary: Get an asset's metadata and expiry status
+      security:
+        - tenantAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AssetKey"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetResponse"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          description: >
+            Not found. Returned both when the key genuinely doesn't exist and
+            when it belongs to a different tenant (indistinguishable by design).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      tags: [ops]
+      summary: Delete an asset before its TTL expires
+      description: Irreversible. Deletes from storage immediately, not just marks it for cleanup.
+      security:
+        - tenantAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AssetKey"
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+components:
+  securitySchemes:
+    adminAuth:
+      type: http
+      scheme: bearer
+      description: The single static admin token configured server-side.
+    tenantAuth:
+      type: http
+      scheme: bearer
+      description: A tenant's API key, issued by POST /api/admin/tenants.
+
+  parameters:
+    TenantId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      example: 1
+    AssetKey:
+      name: key
+      in: path
+      required: true
+      description: The random key returned by the upload call, including its extension.
+      schema:
+        type: string
+      example: 3f1c2a9e-....png
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: INVALID_API_KEY
+            message:
+              type: string
+              example: invalid or revoked API key
+
+    CreateTenantRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          example: my-tenant
+
+    CreateTenantResponse:
+      type: object
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        api_key:
+          type: string
+          description: Shown once. Store it now — it cannot be retrieved again.
+
+    APIKeyResponse:
+      type: object
+      properties:
+        api_key:
+          type: string
+
+    TenantListResponse:
+      type: object
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantSummary"
+
+    TenantSummary:
+      type: object
+      properties:
+        tenant_id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    UploadResponse:
+      type: object
+      properties:
+        key:
+          type: string
+        url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
+
+    AssetResponse:
+      type: object
+      properties:
+        key:
+          type: string
+        url:
+          type: string
+          format: uri
+        original_filename:
+          type: string
+        content_type:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        expired:
+          type: boolean

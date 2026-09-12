@@ -1,0 +1,123 @@
+{
+  "info": {
+    "name": "asset-api",
+    "description": "Multitenant asset-upload API. Set {{base_url}} to the production host for Ops requests, or to http://localhost:18080 (via kubectl port-forward svc/asset-api -n default 18080:8080) for Admin requests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "https://assets.kangoprek.my.id" },
+    { "key": "admin_token", "value": "" },
+    { "key": "tenant_api_key", "value": "" },
+    { "key": "tenant_id", "value": "1" },
+    { "key": "asset_key", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/healthz", "host": ["{{base_url}}"], "path": ["healthz"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Admin",
+      "auth": {
+        "type": "bearer",
+        "bearer": [{ "key": "token", "value": "{{admin_token}}", "type": "string" }]
+      },
+      "item": [
+        {
+          "name": "Create Tenant",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"my-tenant\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/api/admin/tenants", "host": ["{{base_url}}"], "path": ["api", "admin", "tenants"] }
+          }
+        },
+        {
+          "name": "List Tenants",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/admin/tenants", "host": ["{{base_url}}"], "path": ["api", "admin", "tenants"] }
+          }
+        },
+        {
+          "name": "Revoke Tenant",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{base_url}}/api/admin/tenants/{{tenant_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "tenants", "{{tenant_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Regenerate API Key",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/api/admin/tenants/{{tenant_id}}/regenerate",
+              "host": ["{{base_url}}"],
+              "path": ["api", "admin", "tenants", "{{tenant_id}}", "regenerate"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ops",
+      "auth": {
+        "type": "bearer",
+        "bearer": [{ "key": "token", "value": "{{tenant_api_key}}", "type": "string" }]
+      },
+      "item": [
+        {
+          "name": "Upload Asset",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "file", "type": "file", "src": "" },
+                { "key": "ttl_seconds", "type": "text", "value": "3600" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/api/ops/upload", "host": ["{{base_url}}"], "path": ["api", "ops", "upload"] }
+          }
+        },
+        {
+          "name": "Get Asset",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/ops/assets/{{asset_key}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ops", "assets", "{{asset_key}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Asset",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{base_url}}/api/ops/assets/{{asset_key}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "ops", "assets", "{{asset_key}}"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
