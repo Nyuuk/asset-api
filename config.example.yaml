@@ -1,0 +1,25 @@
+server:
+  listen_addr: ":8080"
+  base_url: "https://assets.kangoprek.my.id"
+
+s3:
+  endpoint: "http://seaweedfs-s3.seaweedfs.svc.cluster.local:8333"
+  region: "us-east-1"
+  bucket: "public-assets"
+  force_path_style: true
+  access_key: "CHANGEME"
+  secret_key: "CHANGEME"
+
+database:
+  dsn: "postgres://user:password@postgres.default.svc.cluster.local:5432/asset_api?sslmode=disable"
+
+ttl:
+  default_seconds: 86400
+  max_seconds: 2592000
+  cleanup_interval_seconds: 300
+
+limits:
+  max_file_size_mb: 20
+
+admin:
+  token: "CHANGEME"

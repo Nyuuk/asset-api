@@ -1,0 +1,21 @@
+name: Fetch Vault Secrets
+description: >
+  Fetches Telegram and GitHub tokens from HashiCorp Vault via JWT auth
+  and exports them into GITHUB_ENV for subsequent steps in the calling job.
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch KV secrets from Vault
+      uses: hashicorp/vault-action@v3
+      with:
+        url: https://vault-09cq1rn8.nyuuk.my.id
+        method: jwt
+        path: jwt-github
+        role: nyuuk
+        exportEnv: true
+        secrets: |
+          secret/data/github/telegram TELEGRAM_CHAT_ID | TELEGRAM_CHAT_ID ;
+          secret/data/github/telegram TELEGRAM_TOKEN     | TELEGRAM_TOKEN     ;
+          secret/data/github/telegram TELEGRAM_TOPIC_ID     | TELEGRAM_TOPIC_ID ;
+          secret/data/github GITHUB_TOKEN     | GITHUB_TOKEN ;

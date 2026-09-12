@@ -1,0 +1,262 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_or_branch:
+        description: "Tag or branch to build from"
+        required: false
+        default: "main"
+        type: string
+      tag_suffix:
+        description: "Custom tag suffix (leave empty for auto-generated)"
+        required: false
+        default: ""
+        type: string
+      append_build_identifier:
+        description: "Append build number to tags"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: nyuuk/asset-api
+
+permissions:
+  contents: read
+  packages: write
+  actions: write
+
+jobs:
+  notify-start:
+    name: Notify Build Start
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch secrets from Vault
+        uses: ./.github/actions/vault-secrets
+
+      - name: Send Telegram notification - Build started
+        run: |
+          TAG_OR_BRANCH="${{ github.ref_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG_OR_BRANCH="${{ github.event.inputs.tag_or_branch }}"
+          fi
+
+          MESSAGE="🔵 *Asset API - Docker Build Status*%0A%0A"
+          MESSAGE="${MESSAGE}🔨 *Building Docker Image...*%0A"
+          MESSAGE="${MESSAGE}*Commit:* \`${{ github.sha }}\`%0A"
+          MESSAGE="${MESSAGE}*Tag/Branch:* \`${TAG_OR_BRANCH}\`%0A"
+          MESSAGE="${MESSAGE}*Author:* ${{ github.actor }}%0A%0A"
+          MESSAGE="${MESSAGE}[View Commit](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) | "
+          MESSAGE="${MESSAGE}[View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          curl -s -X POST "https://api.telegram.org/bot${{ env.TELEGRAM_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ env.TELEGRAM_CHAT_ID }}" \
+            -d "message_thread_id=${{ env.TELEGRAM_TOPIC_ID }}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown" \
+            -d "disable_web_page_preview=true"
+
+  detect-environment:
+    name: Detect Target Environment
+    runs-on: ubuntu-latest
+    needs: [notify-start]
+    outputs:
+      should_deploy: ${{ steps.detect.outputs.should_deploy }}
+      image_tag_suffix: ${{ steps.detect.outputs.image_tag_suffix }}
+      append_build_identifier: ${{ steps.detect.outputs.append_build_identifier }}
+    steps:
+      - name: Detect environment from ref
+        id: detect
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            TAG_NAME="${{ github.ref_name }}"
+            echo "image_tag_suffix=${TAG_NAME}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+            TAG_SUFFIX="${{ github.event.inputs.tag_suffix }}"
+            if [[ -z "$TAG_SUFFIX" ]]; then
+              TAG_SUFFIX="${{ github.event.inputs.tag_or_branch }}"
+            fi
+            echo "image_tag_suffix=${TAG_SUFFIX}" >> $GITHUB_OUTPUT
+          else
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+            echo "image_tag_suffix=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+             echo "append_build_identifier=${{ github.event.inputs.append_build_identifier }}" >> $GITHUB_OUTPUT
+          else
+             echo "append_build_identifier=true" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-push:
+    name: Build and Push
+    needs: [notify-start, detect-environment]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag_or_branch || github.ref }}
+
+      - name: Fetch secrets from Vault
+        uses: ./.github/actions/vault-secrets
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ needs.detect-environment.outputs.image_tag_suffix }}
+            type=raw,value=${{ needs.detect-environment.outputs.image_tag_suffix }}-${{ github.run_number }},enable=${{ needs.detect-environment.outputs.append_build_identifier == 'true' }}
+            type=sha,format=short
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Send Telegram notification - Build success
+        if: success()
+        run: |
+          TAG_OR_BRANCH="${{ github.ref_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG_OR_BRANCH="${{ github.event.inputs.tag_or_branch }}"
+          fi
+
+          MESSAGE="🟢 *Asset API - Docker Build Status*%0A%0A"
+          MESSAGE="${MESSAGE}✅ *Build Completed Successfully*%0A"
+          MESSAGE="${MESSAGE}*Commit:* \`${{ github.sha }}\`%0A"
+          MESSAGE="${MESSAGE}*Tag/Branch:* \`${TAG_OR_BRANCH}\`%0A"
+          MESSAGE="${MESSAGE}*Author:* ${{ github.actor }}%0A%0A"
+          MESSAGE="${MESSAGE}[View Commit](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) | "
+          MESSAGE="${MESSAGE}[View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          curl -s -X POST "https://api.telegram.org/bot${{ env.TELEGRAM_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ env.TELEGRAM_CHAT_ID }}" \
+            -d "message_thread_id=${{ env.TELEGRAM_TOPIC_ID }}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown" \
+            -d "disable_web_page_preview=true"
+
+      - name: Send Telegram notification - Build failed
+        if: failure()
+        run: |
+          TAG_OR_BRANCH="${{ github.ref_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG_OR_BRANCH="${{ github.event.inputs.tag_or_branch }}"
+          fi
+
+          MESSAGE="🔴 *Asset API - Docker Build Status*%0A%0A"
+          MESSAGE="${MESSAGE}❌ *Build Failed*%0A"
+          MESSAGE="${MESSAGE}*Commit:* \`${{ github.sha }}\`%0A"
+          MESSAGE="${MESSAGE}*Tag/Branch:* \`${TAG_OR_BRANCH}\`%0A"
+          MESSAGE="${MESSAGE}*Author:* ${{ github.actor }}%0A%0A"
+          MESSAGE="${MESSAGE}[View Commit](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) | "
+          MESSAGE="${MESSAGE}[View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          curl -s -X POST "https://api.telegram.org/bot${{ env.TELEGRAM_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ env.TELEGRAM_CHAT_ID }}" \
+            -d "message_thread_id=${{ env.TELEGRAM_TOPIC_ID }}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown" \
+            -d "disable_web_page_preview=true"
+
+  trigger-deploy:
+    name: Trigger Deployment
+    needs: [detect-environment, build-and-push]
+    if: |
+      always() &&
+      needs.detect-environment.outputs.should_deploy == 'true' &&
+      needs.build-and-push.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch secrets from Vault
+        uses: ./.github/actions/vault-secrets
+
+      - name: Trigger deploy workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.GITHUB_TOKEN }}
+          script: |
+            const imageTag = '${{ needs.detect-environment.outputs.image_tag_suffix }}';
+            const runNumber = '${{ github.run_number }}';
+
+            const fullTag = '${{ needs.detect-environment.outputs.append_build_identifier }}' === 'true'
+              ? `${imageTag}-${runNumber}`
+              : imageTag;
+
+            const dataImage = {
+              "asset-api": fullTag,
+              "asset-api-worker": fullTag
+            }
+
+            await octokit.request('POST /repos/{owner}/{repo}/dispatches', {
+              owner: "Nyuuk",
+              repo: "kube-config",
+              event_type: 'deploy',
+              client_payload: {
+                images: JSON.stringify(dataImage),
+                target_folder: 'apps/asset-api',
+                deployment_file: 'deployment.yaml'
+              }
+            });
+
+      - name: Send Telegram notification - Deploy triggered
+        run: |
+          MESSAGE="🚀 *Asset API - Deployment Triggered*%0A%0A"
+          MESSAGE="${MESSAGE}*Image Tag:* \`${{ needs.detect-environment.outputs.image_tag_suffix }}\`%0A"
+          MESSAGE="${MESSAGE}*Commit:* \`${{ github.sha }}\`%0A"
+          MESSAGE="${MESSAGE}*Author:* ${{ github.actor }}%0A%0A"
+          MESSAGE="${MESSAGE}Deployment workflow has been triggered...%0A"
+          MESSAGE="${MESSAGE}[View Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          curl -s -X POST "https://api.telegram.org/bot${{ env.TELEGRAM_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ env.TELEGRAM_CHAT_ID }}" \
+            -d "message_thread_id=${{ env.TELEGRAM_TOPIC_ID }}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown" \
+            -d "disable_web_page_preview=true"
